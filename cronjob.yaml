@@ -1,0 +1,345 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kubecost-rightsizing-script
+  namespace: kubecost
+data:
+  # Users can edit this script without rebuilding the container image
+  rightsizing.sh: |
+    #!/bin/bash
+    set -e
+    
+    # Configuration
+    KUBECOST_ADDRESS="${KUBECOST_ADDRESS:-http://kubecost-cost-analyzer.kubecost:9090/model}"
+    GIT_REPO_URL="${GIT_REPO_URL}"
+    GIT_BRANCH="${GIT_BRANCH:-main}"
+    GIT_USER_NAME="${GIT_USER_NAME:-Kubecost Bot}"
+    GIT_USER_EMAIL="${GIT_USER_EMAIL:-kubecost-bot@example.com}"
+    TARGET_CPU_UTIL="${TARGET_CPU_UTIL:-0.65}"
+    TARGET_RAM_UTIL="${TARGET_RAM_UTIL:-0.65}"
+    WINDOW="${WINDOW:-3d}"
+    PR_BRANCH="kubecost-rightsizing-$(date +%Y%m%d-%H%M%S)"
+    
+    echo "=== Kubecost Resource Rightsizing Bot ==="
+    
+    # Check for GitHub PAT
+    if [ -z "$GITHUB_TOKEN" ]; then
+      echo "ERROR: GITHUB_TOKEN not found in secret"
+      exit 1
+    fi
+    
+    echo "✓ GitHub token found"
+    
+    # Clone repository
+    WORK_DIR="/tmp/argocd-repo"
+    rm -rf "$WORK_DIR"
+    
+    echo "Cloning repository..."
+    git clone "https://${GITHUB_TOKEN}@${GIT_REPO_URL#https://}" "$WORK_DIR"
+    cd "$WORK_DIR"
+    
+    git config user.name "$GIT_USER_NAME"
+    git config user.email "$GIT_USER_EMAIL"
+    git checkout "$GIT_BRANCH"
+    
+    echo "✓ Repository cloned"
+    
+    # Create new branch for PR
+    git checkout -b "$PR_BRANCH"
+    
+    # Find all YAML files and extract container information
+    echo "Scanning repository for containers..."
+    
+    declare -A CONTAINER_MAP
+    
+    # Find all deployment/statefulset/daemonset YAML files
+    while IFS= read -r yaml_file; do
+      # Extract namespace, kind, and containers
+      NAMESPACE=$(yq eval '.metadata.namespace // "default"' "$yaml_file")
+      KIND=$(yq eval '.kind' "$yaml_file")
+      RESOURCE_NAME=$(yq eval '.metadata.name' "$yaml_file")
+      
+      # Skip if not a workload resource
+      if [[ ! "$KIND" =~ ^(Deployment|StatefulSet|DaemonSet)$ ]]; then
+        continue
+      fi
+      
+      # Extract container names
+      CONTAINERS=$(yq eval '.spec.template.spec.containers[].name' "$yaml_file")
+      
+      while IFS= read -r container; do
+        if [ -n "$container" ] && [ "$container" != "null" ]; then
+          KEY="${NAMESPACE}:${RESOURCE_NAME}:${container}"
+          CONTAINER_MAP[$KEY]="$yaml_file"
+          echo "  Found: $KEY in $yaml_file"
+        fi
+      done <<< "$CONTAINERS"
+    done < <(find . -type f \( -name "*.yaml" -o -name "*.yml" \) -not -path "*/\.*")
+    
+    echo "✓ Found ${#CONTAINER_MAP[@]} containers"
+    
+    if [ ${#CONTAINER_MAP[@]} -eq 0 ]; then
+      echo "No containers found. Exiting."
+      exit 0
+    fi
+    
+    # Iterate through containers and apply recommendations
+    CHANGES_MADE=0
+    SUMMARY=""
+    
+    for key in "${!CONTAINER_MAP[@]}"; do
+      IFS=':' read -r namespace resource_name container <<< "$key"
+      yaml_file="${CONTAINER_MAP[$key]}"
+      
+      echo ""
+      echo "Processing: $namespace/$resource_name/$container"
+      
+      # Fetch Kubecost recommendations
+      RECS=$(curl -s -G \
+        -d 'algorithmCPU=max' \
+        -d 'algorithmRAM=max' \
+        -d "targetCPUUtilization=$TARGET_CPU_UTIL" \
+        -d "targetRAMUtilization=$TARGET_RAM_UTIL" \
+        -d "window=$WINDOW" \
+        --data-urlencode "filter=namespace:\"$namespace\",container:\"$container\"" \
+        ${KUBECOST_ADDRESS}/savings/requestSizingV2)
+      
+      # Check if recommendations exist
+      if [ -z "$RECS" ] || [ "$RECS" == "null" ]; then
+        echo "  ⚠ No recommendations found"
+        continue
+      fi
+      
+      # Extract recommendations
+      CPU=$(echo "$RECS" | jq -r '.Recommendations[0].recommendedRequest.cpu // empty')
+      MEMORY=$(echo "$RECS" | jq -r '.Recommendations[0].recommendedRequest.memory // empty')
+      
+      if [ -z "$CPU" ] || [ -z "$MEMORY" ]; then
+        echo "  ⚠ Incomplete recommendations (CPU: $CPU, Memory: $MEMORY)"
+        continue
+      fi
+      
+      echo "  Recommended - CPU: $CPU, Memory: $MEMORY"
+      
+      # Get current values
+      CURRENT_CPU=$(yq eval "(.spec.template.spec.containers[] | select(.name == \"$container\") | .resources.requests.cpu) // \"not set\"" "$yaml_file")
+      CURRENT_MEMORY=$(yq eval "(.spec.template.spec.containers[] | select(.name == \"$container\") | .resources.requests.memory) // \"not set\"" "$yaml_file")
+      
+      echo "  Current - CPU: $CURRENT_CPU, Memory: $CURRENT_MEMORY"
+      
+      # Update YAML with new resource requests
+      yq eval -i "
+        (.spec.template.spec.containers[] | select(.name == \"$container\") | .resources.requests.cpu) = \"$CPU\" |
+        (.spec.template.spec.containers[] | select(.name == \"$container\") | .resources.requests.memory) = \"$MEMORY\"
+      " "$yaml_file"
+      
+      CHANGES_MADE=$((CHANGES_MADE + 1))
+      SUMMARY="${SUMMARY}\n- \`${namespace}/${resource_name}/${container}\`: CPU: ${CURRENT_CPU} → ${CPU}, Memory: ${CURRENT_MEMORY} → ${MEMORY}"
+      
+      echo "  ✓ Updated"
+    done
+    
+    echo ""
+    echo "=== Summary ==="
+    echo "Containers processed: ${#CONTAINER_MAP[@]}"
+    echo "Changes applied: $CHANGES_MADE"
+    
+    # Check if there are any changes to commit
+    if ! git diff --quiet; then
+      echo ""
+      echo "Committing changes..."
+      
+      git add -A
+      git commit -m "chore: apply Kubecost resource rightsizing recommendations
+
+    Applied Kubecost recommendations for $CHANGES_MADE container(s):
+    $(echo -e "$SUMMARY")
+
+    Analysis parameters:
+    - Window: $WINDOW
+    - Target CPU utilization: $TARGET_CPU_UTIL
+    - Target RAM utilization: $TARGET_RAM_UTIL
+    - Algorithm: max"
+      
+      # Push branch
+      echo "Pushing branch $PR_BRANCH..."
+      git push origin "$PR_BRANCH"
+      
+      # Create Pull Request using GitHub API
+      echo "Creating pull request..."
+      
+      REPO_OWNER=$(echo "$GIT_REPO_URL" | sed -E 's|https://github.com/([^/]+)/.*|\1|')
+      REPO_NAME=$(echo "$GIT_REPO_URL" | sed -E 's|https://github.com/[^/]+/([^/]+)(\.git)?|\1|')
+      
+      PR_BODY="## Kubecost Resource Rightsizing Recommendations
+
+    This PR applies resource request recommendations from Kubecost based on actual usage patterns.
+
+    ### Changes Summary
+    $(echo -e "$SUMMARY")
+
+    ### Analysis Parameters
+    - **Window**: $WINDOW
+    - **Target CPU Utilization**: $TARGET_CPU_UTIL
+    - **Target RAM Utilization**: $TARGET_RAM_UTIL
+    - **Algorithm**: max
+
+    ### Next Steps
+    - Review the recommended changes
+    - Verify the changes align with your performance requirements
+    - Merge when ready
+
+    ---
+    *Generated by Kubecost Rightsizing Bot*"
+      
+      PR_RESPONSE=$(curl -s -X POST \
+        -H "Authorization: token $GITHUB_TOKEN" \
+        -H "Accept: application/vnd.github.v3+json" \
+        "https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/pulls" \
+        -d "$(jq -n \
+          --arg title "chore: apply Kubecost resource rightsizing recommendations" \
+          --arg body "$PR_BODY" \
+          --arg head "$PR_BRANCH" \
+          --arg base "$GIT_BRANCH" \
+          '{title: $title, body: $body, head: $head, base: $base}')")
+      
+      PR_URL=$(echo "$PR_RESPONSE" | jq -r '.html_url // empty')
+      
+      if [ -n "$PR_URL" ]; then
+        echo "✓ Pull request created: $PR_URL"
+      else
+        echo "⚠ Failed to create pull request"
+        echo "Response: $PR_RESPONSE"
+        exit 1
+      fi
+    else
+      echo "No changes detected. Skipping PR creation."
+    fi
+    
+    echo ""
+    echo "=== Complete ==="
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: kubecost-rightsizing
+  namespace: kubecost
+spec:
+  schedule: "0 2 * * 1"
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  concurrencyPolicy: Forbid
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      template:
+        metadata:
+          labels:
+            app: kubecost-rightsizing
+        spec:
+          serviceAccountName: kubecost-rightsizing
+          restartPolicy: OnFailure
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            fsGroup: 1000
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+          - name: rightsizing-bot
+            # Custom image with all dependencies pre-installed
+            # Build from: Dockerfile (includes bash, git, curl, jq, yq)
+            image: your-registry.io/kubecost-rightsizing:v1.0.0
+            imagePullPolicy: IfNotPresent
+            # Override the built-in script with ConfigMap version
+            command: ["/bin/bash", "/scripts/rightsizing.sh"]
+            securityContext:
+              allowPrivilegeEscalation: false
+              readOnlyRootFilesystem: true
+              capabilities:
+                drop:
+                  - ALL
+            env:
+            - name: KUBECOST_ADDRESS
+              value: "http://kubecost-cost-analyzer.kubecost:9090/model"
+            - name: GIT_REPO_URL
+              value: "https://github.com/your-org/your-argocd-repo.git"
+            - name: GIT_BRANCH
+              value: "main"
+            - name: GIT_USER_NAME
+              value: "Kubecost Bot"
+            - name: GIT_USER_EMAIL
+              value: "kubecost-bot@example.com"
+            - name: TARGET_CPU_UTIL
+              value: "0.65"
+            - name: TARGET_RAM_UTIL
+              value: "0.65"
+            - name: WINDOW
+              value: "3d"
+            - name: GITHUB_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: github-pat
+                  key: token
+            resources:
+              requests:
+                memory: "128Mi"
+                cpu: "100m"
+              limits:
+                memory: "256Mi"
+                cpu: "200m"
+            volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            # Mount ConfigMap script to override built-in script
+            - name: script-override
+              mountPath: /scripts
+              readOnly: true
+          volumes:
+          - name: tmp
+            emptyDir: {}
+          # ConfigMap containing user-editable script
+          - name: script-override
+            configMap:
+              name: kubecost-rightsizing-script
+              defaultMode: 0755
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: github-pat
+  namespace: kubecost
+type: Opaque
+stringData:
+  token: "ghp_your_github_personal_access_token_here"
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: kubecost-rightsizing
+  namespace: kubecost
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: kubecost-rightsizing
+rules:
+- apiGroups: [""]
+  resources: ["pods", "namespaces"]
+  verbs: ["get", "list"]
+- apiGroups: ["apps"]
+  resources: ["deployments", "statefulsets", "daemonsets"]
+  verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: kubecost-rightsizing
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: kubecost-rightsizing
+subjects:
+- kind: ServiceAccount
+  name: kubecost-rightsizing
+  namespace: kubecost
