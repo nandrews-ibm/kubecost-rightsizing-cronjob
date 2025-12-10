@@ -33,8 +33,8 @@ Automatically optimize Kubernetes resource requests in your ArgoCD repositories 
 
 ```bash
 # Clone the repository
-git clone https://github.com/YOUR-ORG/kubecost-argocd-rightsizing.git
-cd kubecost-argocd-rightsizing
+git clone https://github.com/nandrews-ibm/kubecost-rightsizing-cronjob.git
+cd kubecost-rightsizing-cronjob
 
 # Build multi-architecture image
 docker buildx build --platform linux/amd64,linux/arm64 \
