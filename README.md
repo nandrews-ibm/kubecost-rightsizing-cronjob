@@ -355,9 +355,6 @@ This project is licensed under the Apache License 2.0 - see the [LICENSE](LICENS
 - [ ] Helm chart values.yaml support
 - [ ] Kustomize base/overlay support
 - [ ] Slack/Teams notifications
-- [ ] Metrics dashboard
-- [ ] Cost savings tracking
-- [ ] Multi-cluster support
 
 ## ⭐ Star History
 
