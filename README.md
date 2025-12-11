@@ -315,7 +315,6 @@ kubectl run test --rm -it --image=curlimages/curl --restart=Never -- \
 - ✅ Runs as non-root user (UID 1000)
 - ✅ Read-only root filesystem
 - ✅ Minimal container image (Alpine-based)
-- ✅ No privileged escalation
 - ✅ Token stored in Kubernetes Secret
 - ⚠️ Token has write access to repository (by design)
 
