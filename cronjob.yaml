@@ -8,7 +8,7 @@ data:
   rightsizing.sh: |
     #!/bin/bash
     set -e
-    
+
     # Configuration
     KUBECOST_ADDRESS="${KUBECOST_ADDRESS:-http://kubecost-frontend.kubecost:9090/model}"
     GIT_REPO_URL="${GIT_REPO_URL}"
@@ -19,39 +19,39 @@ data:
     TARGET_RAM_UTIL="${TARGET_RAM_UTIL:-0.65}"
     WINDOW="${WINDOW:-3d}"
     PR_BRANCH="kubecost-rightsizing-$(date +%Y%m%d-%H%M%S)"
-    
+
     echo "=== Kubecost Resource Rightsizing Bot ==="
-    
+
     # Check for GitHub PAT
     if [ -z "$GITHUB_TOKEN" ]; then
       echo "ERROR: GITHUB_TOKEN not found in secret"
       exit 1
     fi
-    
+
     echo "✓ GitHub token found"
-    
+
     # Clone repository
     WORK_DIR="/tmp/argocd-repo"
     rm -rf "$WORK_DIR"
-    
+
     echo "Cloning repository..."
     git clone "https://${GITHUB_TOKEN}@${GIT_REPO_URL#https://}" "$WORK_DIR"
     cd "$WORK_DIR"
-    
+
     git config user.name "$GIT_USER_NAME"
     git config user.email "$GIT_USER_EMAIL"
     git checkout "$GIT_BRANCH"
-    
+
     echo "✓ Repository cloned"
-    
+
     # Create new branch for PR
     git checkout -b "$PR_BRANCH"
-    
+
     # Find all YAML files and extract container information
     echo "Scanning repository for containers..."
-    
+
     declare -A CONTAINER_MAP
-    
+
     # Find all deployment/statefulset/daemonset YAML files
     while IFS= read -r yaml_file; do
       # Extract namespace, kind, and containers
@@ -75,18 +75,18 @@ data:
         fi
       done <<< "$CONTAINERS"
     done < <(find . -type f \( -name "*.yaml" -o -name "*.yml" \) -not -path "*/\.*")
-    
+
     echo "✓ Found ${#CONTAINER_MAP[@]} containers"
-    
+
     if [ ${#CONTAINER_MAP[@]} -eq 0 ]; then
       echo "No containers found. Exiting."
       exit 0
     fi
-    
+
     # Iterate through containers and apply recommendations
     CHANGES_MADE=0
     SUMMARY=""
-    
+
     for key in "${!CONTAINER_MAP[@]}"; do
       IFS=':' read -r namespace resource_name container <<< "$key"
       yaml_file="${CONTAINER_MAP[$key]}"
@@ -95,13 +95,14 @@ data:
       echo "Processing: $namespace/$resource_name/$container"
       
       # Fetch Kubecost recommendations
+      # Filter format: namespace:"value"+container:"value" (+ is AND)
       RECS=$(curl -s -G \
         -d 'algorithmCPU=max' \
         -d 'algorithmRAM=max' \
         -d "targetCPUUtilization=$TARGET_CPU_UTIL" \
         -d "targetRAMUtilization=$TARGET_RAM_UTIL" \
         -d "window=$WINDOW" \
-        --data-urlencode "filter=namespace:\"$namespace\",container:\"$container\"" \
+        --data-urlencode "filter=namespace:\"$namespace\"+container:\"$container\"" \
         ${KUBECOST_ADDRESS}/savings/requestSizingV2)
       
       # Check if recommendations exist
@@ -110,7 +111,20 @@ data:
         continue
       fi
       
-      # Extract recommendations
+      # Check if valid JSON
+      if ! echo "$RECS" | jq empty 2>/dev/null; then
+        echo "  ⚠ Invalid JSON response from Kubecost"
+        continue
+      fi
+      
+      # Check if we have recommendations
+      COUNT=$(echo "$RECS" | jq -r '.Count // 0')
+      if [ "$COUNT" = "0" ]; then
+        echo "  ⚠ No recommendations found (Kubecost may need more metrics)"
+        continue
+      fi
+      
+      # Extract recommendations (should be single result with both filters)
       CPU=$(echo "$RECS" | jq -r '.Recommendations[0].recommendedRequest.cpu // empty')
       MEMORY=$(echo "$RECS" | jq -r '.Recommendations[0].recommendedRequest.memory // empty')
       
@@ -138,12 +152,12 @@ data:
       
       echo "  ✓ Updated"
     done
-    
+
     echo ""
     echo "=== Summary ==="
     echo "Containers processed: ${#CONTAINER_MAP[@]}"
     echo "Changes applied: $CHANGES_MADE"
-    
+
     # Check if there are any changes to commit
     if ! git diff --quiet; then
       echo ""
@@ -169,7 +183,10 @@ data:
       echo "Creating pull request..."
       
       REPO_OWNER=$(echo "$GIT_REPO_URL" | sed -E 's|https://github.com/([^/]+)/.*|\1|')
-      REPO_NAME=$(echo "$GIT_REPO_URL" | sed -E 's|https://github.com/[^/]+/([^/]+)(\.git)?|\1|')
+      REPO_NAME=$(echo "$GIT_REPO_URL" | sed -E 's|https://github.com/[^/]+/([^/]+)(\.git)?$|\1|' | sed 's/\.git$//')
+      
+      echo "Repository: $REPO_OWNER/$REPO_NAME"
+      echo "Branch: $PR_BRANCH -> $GIT_BRANCH"
       
       PR_BODY="## Kubecost Resource Rightsizing Recommendations
 
@@ -215,7 +232,7 @@ data:
     else
       echo "No changes detected. Skipping PR creation."
     fi
-    
+
     echo ""
     echo "=== Complete ==="
 ---
