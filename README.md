@@ -309,8 +309,6 @@ kubectl run test --rm -it --image=curlimages/curl --restart=Never -- \
 - Check repository name is correct in `GIT_REPO_URL`
 - Ensure repository is accessible to the token
 
-See [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) for more solutions.
-
 
 ### Security
 
