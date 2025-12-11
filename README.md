@@ -345,10 +345,11 @@ Typical run time: 30-60 seconds for 100 containers
 
 This project is licensed under the Apache License 2.0 - see the [LICENSE](LICENSE) file for details.
 
-## 🗺️ Roadmap
+## 🗺️ Roadmap (in no particular order)
 
 - [ ] GitLab support
 - [ ] Bitbucket support
+- [ ] Namespace exclusions
 - [ ] Helm chart values.yaml support
 - [ ] Kustomize base/overlay support
 - [ ] Slack/Teams notifications
