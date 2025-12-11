@@ -10,7 +10,7 @@ data:
     set -e
     
     # Configuration
-    KUBECOST_ADDRESS="${KUBECOST_ADDRESS:-http://kubecost-cost-analyzer.kubecost:9090/model}"
+    KUBECOST_ADDRESS="${KUBECOST_ADDRESS:-http://kubecost-frontend.kubecost:9090/model}"
     GIT_REPO_URL="${GIT_REPO_URL}"
     GIT_BRANCH="${GIT_BRANCH:-main}"
     GIT_USER_NAME="${GIT_USER_NAME:-Kubecost Bot}"
@@ -261,7 +261,7 @@ spec:
                   - ALL
             env:
             - name: KUBECOST_ADDRESS
-              value: "http://kubecost-cost-analyzer.kubecost:9090/model"
+              value: "http://kubecost-frontend.kubecost:9090/model"
             - name: GIT_REPO_URL
               value: "https://github.com/your-org/your-argocd-repo.git"
             - name: GIT_BRANCH

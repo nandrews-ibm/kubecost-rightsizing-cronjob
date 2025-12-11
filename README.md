@@ -125,7 +125,7 @@ Configure via environment variables in the CronJob:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `KUBECOST_ADDRESS` | `http://kubecost-cost-analyzer.kubecost:9090/model` | Kubecost API endpoint |
+| `KUBECOST_ADDRESS` | `http://kubecost-frontend.kubecost:9090/model` | Kubecost API endpoint |
 | `GIT_REPO_URL` | *(required)* | GitHub repository URL |
 | `GIT_BRANCH` | `main` | Base branch for PRs |
 | `GIT_USER_NAME` | `Kubecost Bot` | Git commit author name |
@@ -300,7 +300,7 @@ Kubecost needs time to collect metrics:
 ```bash
 # Test from inside cluster
 kubectl run test --rm -it --image=curlimages/curl --restart=Never -- \
-  curl http://kubecost-cost-analyzer.kubecost:9090/model/savings/requestSizingV2?window=1d
+  curl http://kubecost-frontend.kubecost:9090/model/savings/requestSizingV2?window=1d
 ```
 
 ### PR Creation Fails with 404
