@@ -1,0 +1,112 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kubecost-rightsizing-ui
+  namespace: kubecost
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: kubecost-rightsizing-ui
+  template:
+    metadata:
+      labels:
+        app: kubecost-rightsizing-ui
+    spec:
+      serviceAccountName: kubecost-rightsizing-ui
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+      containers:
+      - name: ui
+        image: natea123/kubecost-rightsizing-ui:v1.0.0
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 8080
+        env:
+        - name: NAMESPACE
+          value: kubecost
+        - name: CRONJOB_NAME
+          value: kubecost-rightsizing
+        resources:
+          requests:
+            memory: "64Mi"
+            cpu: "50m"
+          limits:
+            memory: "128Mi"
+            cpu: "200m"
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop: ["ALL"]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kubecost-rightsizing-ui
+  namespace: kubecost
+spec:
+  selector:
+    app: kubecost-rightsizing-ui
+  ports:
+  - port: 80
+    targetPort: 8080
+  type: ClusterIP
+---
+# Uncomment to expose via ingress:
+# apiVersion: networking.k8s.io/v1
+# kind: Ingress
+# metadata:
+#   name: kubecost-rightsizing-ui
+#   namespace: kubecost
+# spec:
+#   rules:
+#   - host: rightsizing.internal.example.com
+#     http:
+#       paths:
+#       - path: /
+#         pathType: Prefix
+#         backend:
+#           service:
+#             name: kubecost-rightsizing-ui
+#             port:
+#               number: 80
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: kubecost-rightsizing-ui
+  namespace: kubecost
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: kubecost-rightsizing-ui
+  namespace: kubecost
+rules:
+- apiGroups: ["batch"]
+  resources: ["cronjobs"]
+  verbs: ["get", "update", "patch"]
+- apiGroups: ["batch"]
+  resources: ["jobs"]
+  verbs: ["create", "get", "list"]
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["get", "list"]
+- apiGroups: [""]
+  resources: ["pods/log"]
+  verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: kubecost-rightsizing-ui
+  namespace: kubecost
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: kubecost-rightsizing-ui
+subjects:
+- kind: ServiceAccount
+  name: kubecost-rightsizing-ui
+  namespace: kubecost
