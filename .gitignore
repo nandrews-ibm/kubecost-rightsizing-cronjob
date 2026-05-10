@@ -1,0 +1,16 @@
+# Node
+ui/frontend/node_modules/
+ui/frontend/dist/
+ui/frontend/.env*
+
+# Python
+__pycache__/
+*.pyc
+ui/backend/.env*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Package locks (keep package-lock.json, ignore npm debug logs)
+npm-debug.log*
