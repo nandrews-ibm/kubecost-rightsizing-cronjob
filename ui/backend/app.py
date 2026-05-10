@@ -2,7 +2,10 @@ from flask import Flask, jsonify, request, send_from_directory
 from kubernetes import client, config
 import copy
 import os
+import re
 from datetime import datetime, timezone
+
+PR_URL_RE = re.compile(r'https://github\.com/\S+/pull/\d+')
 
 app = Flask(__name__, static_folder="dist", static_url_path="")
 
@@ -114,6 +117,20 @@ def list_jobs():
                 "cronjob.kubernetes.io/instantiate"
             ) == "manual"
 
+            pr_url = None
+            if status == "succeeded":
+                try:
+                    pods = core_v1.list_namespaced_pod(
+                        NAMESPACE, label_selector=f"job-name={job.metadata.name}")
+                    if pods.items:
+                        logs = core_v1.read_namespaced_pod_log(
+                            pods.items[-1].metadata.name, NAMESPACE, tail_lines=20)
+                        m = PR_URL_RE.search(logs)
+                        if m:
+                            pr_url = m.group(0)
+                except Exception:
+                    pass
+
             result.append({
                 "name": job.metadata.name,
                 "status": status,
@@ -121,6 +138,7 @@ def list_jobs():
                 "completionTime": job.status.completion_time.isoformat() if job.status.completion_time else None,
                 "duration": duration,
                 "manual": is_manual,
+                "prUrl": pr_url,
             })
 
         return jsonify(result)
@@ -141,7 +159,8 @@ def get_job_logs(job_name):
         except Exception:
             logs = f"Logs not yet available (pod phase: {pod.status.phase})"
 
-        return jsonify({"logs": logs, "podName": pod.metadata.name})
+        m = PR_URL_RE.search(logs)
+        return jsonify({"logs": logs, "podName": pod.metadata.name, "prUrl": m.group(0) if m else None})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 

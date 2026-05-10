@@ -112,9 +112,21 @@ export default function JobHistory() {
                       {duration(job.duration)}
                     </td>
                     <td>
-                      <button className="btn btn-secondary btn-sm" onClick={() => setSelected(job)}>
-                        Logs
-                      </button>
+                      <div style={{ display: 'flex', gap: 6 }}>
+                        {job.prUrl && (
+                          <a
+                            href={job.prUrl}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="btn btn-secondary btn-sm"
+                          >
+                            View PR
+                          </a>
+                        )}
+                        <button className="btn btn-secondary btn-sm" onClick={() => setSelected(job)}>
+                          Logs
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 ))}
